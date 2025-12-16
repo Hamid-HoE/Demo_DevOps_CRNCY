@@ -1,0 +1,11 @@
+.git
+.gitignore
+*.log
+__pycache__/
+*.pyc
+.venv/
+.vscode/
+.idea/
+node_modules/
+dist/
+target/
