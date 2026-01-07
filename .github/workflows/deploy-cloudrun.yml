@@ -10,6 +10,10 @@ permissions:
   id-token: write
   pull-requests: write
 
+concurrency:
+  group: cloudrun-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
   GCP_REGION: ${{ secrets.GCP_REGION }}
@@ -49,14 +53,14 @@ jobs:
         env:
           PYTHONPATH: src
         run: |
-          pytest -q --cov=app --cov-report=xml:xml --cov-report=term-missing
+          pytest -q --cov=app --cov-report=xml:coverage.xml --cov-report=term-missing
 
       - name: Debug coverage file
         run: |
-          echo "PWD=$(pwd)"
+          pwd
           ls -la
           ls -la coverage.xml
-          head -n 25 coverage.xml
+          head -n 20 coverage.xml
 
       - name: SonarCloud Scan
         uses: SonarSource/sonarcloud-github-action@v3
@@ -71,8 +75,10 @@ jobs:
             -Dsonar.sources=src/app
             -Dsonar.tests=tests
             -Dsonar.python.coverage.reportPaths=coverage.xml
-            -Dsonar.coverage.exclusions=tests/**
+            -Dsonar.exclusions=src/app/static/**,src/app/templates/**
+            -Dsonar.coverage.exclusions=tests/**,src/app/static/**,src/app/templates/**
             -Dsonar.sourceEncoding=UTF-8
+            -Dsonar.python.version=3.11
 
       - name: SonarCloud Quality Gate
         uses: SonarSource/sonarqube-quality-gate-action@v1.1.0
@@ -102,6 +108,8 @@ jobs:
 
       - name: Setup gcloud
         uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
 
       - name: Configure Docker auth for Artifact Registry
         run: |
