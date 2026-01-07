@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>{{ title }}</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="container">
+      <header class="header">
+        <h1>{{ title }}</h1>
+        <p class="subtitle">Base currency: <strong>{{ base }}</strong>{% if date %} • Rates date: <strong>{{ date }}</strong>{% endif %}</p>
+      </header>
+
+      {% if error %}
+        <div class="error">
+          <strong>Rates fetch error:</strong> {{ error }}
+        </div>
+      {% endif %}
+
+      <section class="card">
+        <table>
+          <thead>
+            <tr>
+              <th>Country</th>
+              <th>Currency</th>
+              <th>1 {{ base }} =</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for r in rows %}
+              <tr>
+                <td class="country">{{ r.flag }} {{ r.country }}</td>
+                <td><code>{{ r.currency }}</code></td>
+                <td>
+                  {% if r.rate is not none %}
+                    <strong>{{ "%.4f"|format(r.rate) }}</strong>
+                  {% else %}
+                    <span class="muted">N/A</span>
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </section>
+
+      <footer class="footer">
+        <a href="/api/rates" target="_blank" rel="noreferrer">View JSON</a>
+        <span class="muted">•</span>
+        <a href="/health" target="_blank" rel="noreferrer">Health</a>
+      </footer>
+    </main>
+  </body>
+</html>
