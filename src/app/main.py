@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from pathlib import Path
 from typing import Any, Dict, List
 
 import httpx
@@ -27,12 +28,18 @@ CURRENCIES: List[Dict[str, str]] = [
 _CACHE_TTL_SECONDS = 600
 _cache: Dict[str, Any] = {"ts": 0.0, "payload": None}
 
-FRANKFURTER_URL = "https://api.frankfurter.dev/v1/latest"  # API pública 
+FRANKFURTER_URL = "https://api.frankfurter.dev/v1/latest"  # API pública
+
+# ---- Paths robustos (clave para pytest/local/Docker/Cloud Run) ----
+BASE_DIR = Path(__file__).resolve().parent  # .../src/app
+TEMPLATES_DIR = BASE_DIR / "templates"      # .../src/app/templates
+STATIC_DIR = BASE_DIR / "static"            # .../src/app/static
 
 app = FastAPI(title=APP_TITLE)
 
-templates = Jinja2Templates(directory="app/templates")
-app.mount("/static", StaticFiles(directory="app/static"), name="static")
+# Templates y estáticos con rutas absolutas
+templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
 @app.get("/health")
@@ -73,17 +80,13 @@ async def home(request: Request) -> HTMLResponse:
     except Exception as ex:
         error = str(ex)
 
-    # Normalizamos para el template
     rates = (data or {}).get("rates", {}) if isinstance(data, dict) else {}
     date = (data or {}).get("date") if isinstance(data, dict) else None
 
     rows = []
     for c in CURRENCIES:
         code = c["currency"]
-        if code == BASE_CCY:
-            rate = 1.0
-        else:
-            rate = rates.get(code)
+        rate = 1.0 if code == BASE_CCY else rates.get(code)
         rows.append({**c, "rate": rate})
 
     return templates.TemplateResponse(
