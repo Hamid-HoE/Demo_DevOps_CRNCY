@@ -1,68 +1,63 @@
-name: Build & Deploy to Cloud Run
+name: CI + Deploy (Cloud Run)
 
 on:
+  pull_request:
   push:
     branches: [ "main" ]
-  workflow_dispatch:
 
 permissions:
   contents: read
-  id-token: write
-
-env:
-  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
-  REGION: ${{ secrets.GCP_REGION }}
-  GAR_REPO: ${{ secrets.GAR_REPO }}
-  SERVICE_NAME: ${{ secrets.CLOUD_RUN_SERVICE }}
-  RUNTIME_SA: ${{ secrets.CLOUD_RUN_RUNTIME_SA }}
-  IMAGE_NAME: demo-devops-api
+  id-token: write   # necesario para WIF (OIDC)
+  pull-requests: write
 
 jobs:
-  deploy:
+  ci:
+    name: CI (tests + SonarCloud)
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Auth to Google Cloud (WIF)
-        uses: google-github-actions/auth@v2
         with:
-          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
-          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+          fetch-depth: 0  # recomendado para Sonar (blame)
 
-      - name: Setup gcloud
-        uses: google-github-actions/setup-gcloud@v2
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
-          project_id: ${{ env.PROJECT_ID }}
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: src/requirements.txt
 
-      - name: Configure Docker for Artifact Registry
+      - name: Install dependencies
         run: |
-          gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
+          python -m pip install --upgrade pip
+          pip install -r src/requirements.txt
+          pip install pytest pytest-cov
 
-      - name: Build & Push image
+      - name: Run tests (coverage)
         run: |
-          IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${GAR_REPO}/${IMAGE_NAME}:${GITHUB_SHA}"
-          echo "IMAGE=$IMAGE" >> $GITHUB_ENV
-          docker build -t "$IMAGE" .
-          docker push "$IMAGE"
+          pytest -q --cov=src/app --cov-report=xml:coverage.xml --cov-report=term-missing
 
-      - name: Deploy to Cloud Run
-        run: |
-          gcloud run deploy "${SERVICE_NAME}" \
-            --image "${IMAGE}" \
-            --region "${REGION}" \
-            --platform managed \
-            --service-account "${RUNTIME_SA}" \
-            --allow-unauthenticated \
-            --port 8080 \
-            --min-instances 0 \
-            --max-instances 1 \
-            --cpu 1 \
-            --memory 256Mi
+      - name: SonarCloud Scan
+        uses: SonarSource/sonarcloud-github-action@v2
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          args: >
+            -Dsonar.host.url=https://sonarcloud.io
+            -Dsonar.organization=${{ secrets.SONAR_ORG }}
+            -Dsonar.projectKey=${{ secrets.SONAR_PROJECT_KEY }}
+            -Dsonar.sources=src
+            -Dsonar.tests=tests
+            -Dsonar.python.coverage.reportPaths=coverage.xml
+            -Dsonar.sourceEncoding=UTF-8
 
-      - name: Show Service URL
-        run: |
-          gcloud run services describe "${SERVICE_NAME}" \
-            --region "${REGION}" \
-            --format='value(status.url)'
+  deploy:
+    name: Deploy to Cloud Run
+    runs-on: ubuntu-latest
+    needs: [ ci ]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
