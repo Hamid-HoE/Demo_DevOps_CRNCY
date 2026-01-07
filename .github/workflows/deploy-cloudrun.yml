@@ -49,7 +49,14 @@ jobs:
         env:
           PYTHONPATH: src
         run: |
-          pytest -q --cov=src/app --cov-report=xml:coverage.xml --cov-report=term-missing
+          pytest -q --cov=app --cov-report=xml:xml --cov-report=term-missing
+
+      - name: Debug coverage file
+        run: |
+          echo "PWD=$(pwd)"
+          ls -la
+          ls -la coverage.xml
+          head -n 25 coverage.xml
 
       - name: SonarCloud Scan
         uses: SonarSource/sonarcloud-github-action@v3
@@ -64,6 +71,7 @@ jobs:
             -Dsonar.sources=src/app
             -Dsonar.tests=tests
             -Dsonar.python.coverage.reportPaths=coverage.xml
+            -Dsonar.coverage.exclusions=tests/**
             -Dsonar.sourceEncoding=UTF-8
 
       - name: SonarCloud Quality Gate
