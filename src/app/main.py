@@ -51,7 +51,11 @@ STATIC_DIR = BASE_DIR / "static"
 app = FastAPI(title=APP_TITLE)
 
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
-app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), shows_directory=False, name="static")
+app.mount(
+    "/static",
+    StaticFiles(directory=str(STATIC_DIR), check_dir=True),
+    name="static",
+)
 
 
 @app.get("/health")
