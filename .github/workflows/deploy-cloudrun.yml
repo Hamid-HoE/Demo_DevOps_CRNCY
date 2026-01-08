@@ -48,7 +48,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip
 
-          # Soporta ambos layouts (raíz o src/)
           if [ -f src/requirements.txt ]; then
             pip install -r src/requirements.txt
           elif [ -f requirements.txt ]; then
@@ -93,9 +92,6 @@ jobs:
     needs: [ci]
     if: ${{ github.event_name == 'push' }}
 
-    outputs:
-      image_ref: ${{ steps.meta.outputs.image_ref }}
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -113,8 +109,7 @@ jobs:
         run: |
           gcloud auth configure-docker "${GCP_REGION}-docker.pkg.dev" --quiet
 
-      - name: Build & Push
-        id: meta
+      - name: Build & Push (tag = GITHUB_SHA)
         run: |
           set -euo pipefail
 
@@ -124,14 +119,7 @@ jobs:
           docker build -t "${IMAGE_URI}:${TAG}" .
           docker push "${IMAGE_URI}:${TAG}"
 
-          FULL_DIGEST="$(docker inspect --format='{{index .RepoDigests 0}}' "${IMAGE_URI}:${TAG}" | head -n 1 || true)"
-          if [ -z "${FULL_DIGEST}" ]; then
-            echo "Unable to resolve image digest for ${IMAGE_URI}:${TAG}"
-            exit 1
-          fi
-
-          echo "image_ref=${FULL_DIGEST}" >> "$GITHUB_OUTPUT"
-          echo "Pushed: ${FULL_DIGEST}"
+          echo "Pushed: ${IMAGE_URI}:${TAG}"
 
   deploy_dev:
     name: Deploy DEV (develop)
@@ -142,13 +130,11 @@ jobs:
 
     env:
       CLOUD_RUN_SERVICE: ${{ secrets.CLOUD_RUN_SERVICE_DEV }}
-      IMAGE: ${{ needs.build_push.outputs.image_ref }}
 
     steps:
-      - name: Guard (service/image set)
+      - name: Guard (service set)
         run: |
           test -n "${CLOUD_RUN_SERVICE}" || (echo "CLOUD_RUN_SERVICE_DEV is empty" && exit 1)
-          test -n "${IMAGE}" || (echo "IMAGE is empty (build_push output missing)" && exit 1)
 
       - name: Auth to Google Cloud (WIF)
         uses: google-github-actions/auth@v2
@@ -161,6 +147,7 @@ jobs:
 
       - name: Deploy
         run: |
+          IMAGE="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GAR_REPO}/crncy-api:${GITHUB_SHA}"
           gcloud run deploy "${CLOUD_RUN_SERVICE}" \
             --image "${IMAGE}" \
             --region "${GCP_REGION}" \
@@ -177,13 +164,11 @@ jobs:
 
     env:
       CLOUD_RUN_SERVICE: ${{ secrets.CLOUD_RUN_SERVICE_TEST }}
-      IMAGE: ${{ needs.build_push.outputs.image_ref }}
 
     steps:
-      - name: Guard (service/image set)
+      - name: Guard (service set)
         run: |
           test -n "${CLOUD_RUN_SERVICE}" || (echo "CLOUD_RUN_SERVICE_TEST is empty" && exit 1)
-          test -n "${IMAGE}" || (echo "IMAGE is empty (build_push output missing)" && exit 1)
 
       - name: Auth to Google Cloud (WIF)
         uses: google-github-actions/auth@v2
@@ -196,6 +181,7 @@ jobs:
 
       - name: Deploy
         run: |
+          IMAGE="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GAR_REPO}/crncy-api:${GITHUB_SHA}"
           gcloud run deploy "${CLOUD_RUN_SERVICE}" \
             --image "${IMAGE}" \
             --region "${GCP_REGION}" \
@@ -212,13 +198,11 @@ jobs:
 
     env:
       CLOUD_RUN_SERVICE: ${{ secrets.CLOUD_RUN_SERVICE_PROD }}
-      IMAGE: ${{ needs.build_push.outputs.image_ref }}
 
     steps:
-      - name: Guard (service/image set)
+      - name: Guard (service set)
         run: |
           test -n "${CLOUD_RUN_SERVICE}" || (echo "CLOUD_RUN_SERVICE_PROD is empty" && exit 1)
-          test -n "${IMAGE}" || (echo "IMAGE is empty (build_push output missing)" && exit 1)
 
       - name: Auth to Google Cloud (WIF)
         uses: google-github-actions/auth@v2
@@ -231,6 +215,7 @@ jobs:
 
       - name: Deploy
         run: |
+          IMAGE="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GAR_REPO}/crncy-api:${GITHUB_SHA}"
           gcloud run deploy "${CLOUD_RUN_SERVICE}" \
             --image "${IMAGE}" \
             --region "${GCP_REGION}" \
