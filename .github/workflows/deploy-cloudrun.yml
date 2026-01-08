@@ -60,8 +60,6 @@ jobs:
         run: |
           pytest -q --cov=app --cov-report=xml:coverage.xml --cov-report=term-missing
 
-      # En PR: bloquea si falla.
-      # En push: no bloquea el pipeline (para permitir deploy), pero deja el resultado visible.
       - name: SonarCloud Scan (non-blocking on push)
         uses: SonarSource/sonarcloud-github-action@v3
         continue-on-error: ${{ github.event_name == 'push' }}
@@ -86,7 +84,7 @@ jobs:
     if: ${{ github.event_name == 'push' }}
 
     outputs:
-      image_ref: ${{ steps.meta.outputs.image_ref }}
+      image: ${{ steps.meta.outputs.image }}
 
     steps:
       - name: Checkout
@@ -114,9 +112,8 @@ jobs:
           docker build -t "${IMAGE_URI}:${TAG}" .
           docker push "${IMAGE_URI}:${TAG}"
 
-          FULL_DIGEST="$(docker inspect --format='{{index .RepoDigests 0}}' "${IMAGE_URI}:${TAG}")"
-          echo "image_ref=${FULL_DIGEST}" >> "$GITHUB_OUTPUT"
-          echo "Pushed: ${FULL_DIGEST}"
+          echo "image=${IMAGE_URI}:${TAG}" >> "$GITHUB_OUTPUT"
+          echo "Pushed: ${IMAGE_URI}:${TAG}"
 
   deploy_dev:
     name: Deploy DEV (develop)
@@ -130,7 +127,12 @@ jobs:
     steps:
       - name: Guard (service set?)
         run: |
-          test -n "$CLOUD_RUN_SERVICE" || (echo "CLOUD_RUN_SERVICE is empty (check environment secrets + environment: DEV)" && exit 1)
+          test -n "$CLOUD_RUN_SERVICE" || (echo "CLOUD_RUN_SERVICE is empty (check environment: DEV secret CLOUD_RUN_SERVICE_DEV)" && exit 1)
+
+      - name: Guard (image set?)
+        run: |
+          test -n "${{ needs.build_push.outputs.image }}" || (echo "IMAGE is empty (build_push output missing)" && exit 1)
+          echo "IMAGE=${{ needs.build_push.outputs.image }}"
 
       - name: Auth to Google Cloud (WIF)
         uses: google-github-actions/auth@v2
@@ -144,7 +146,7 @@ jobs:
       - name: Deploy
         run: |
           gcloud run deploy "${CLOUD_RUN_SERVICE}" \
-            --image "${{ needs.build_push.outputs.image_ref }}" \
+            --image "${{ needs.build_push.outputs.image }}" \
             --region "${GCP_REGION}" \
             --project "${GCP_PROJECT_ID}" \
             --service-account "${CLOUD_RUN_RUNTIME_SA}" \
@@ -162,7 +164,7 @@ jobs:
     steps:
       - name: Guard (service set?)
         run: |
-          test -n "$CLOUD_RUN_SERVICE" || (echo "CLOUD_RUN_SERVICE is empty (check environment secrets + environment: TEST)" && exit 1)
+          test -n "$CLOUD_RUN_SERVICE" || (echo "CLOUD_RUN_SERVICE is empty (check environment: TEST secret CLOUD_RUN_SERVICE_TEST)" && exit 1)
 
       - name: Auth to Google Cloud (WIF)
         uses: google-github-actions/auth@v2
@@ -176,7 +178,7 @@ jobs:
       - name: Deploy
         run: |
           gcloud run deploy "${CLOUD_RUN_SERVICE}" \
-            --image "${{ needs.build_push.outputs.image_ref }}" \
+            --image "${{ needs.build_push.outputs.image }}" \
             --region "${GCP_REGION}" \
             --project "${GCP_PROJECT_ID}" \
             --service-account "${CLOUD_RUN_RUNTIME_SA}" \
@@ -194,7 +196,7 @@ jobs:
     steps:
       - name: Guard (service set?)
         run: |
-          test -n "$CLOUD_RUN_SERVICE" || (echo "CLOUD_RUN_SERVICE is empty (check environment secrets + environment: PROD)" && exit 1)
+          test -n "$CLOUD_RUN_SERVICE" || (echo "CLOUD_RUN_SERVICE is empty (check environment: PROD secret CLOUD_RUN_SERVICE_PROD)" && exit 1)
 
       - name: Auth to Google Cloud (WIF)
         uses: google-github-actions/auth@v2
@@ -208,7 +210,7 @@ jobs:
       - name: Deploy
         run: |
           gcloud run deploy "${CLOUD_RUN_SERVICE}" \
-            --image "${{ needs.build_push.outputs.image_ref }}" \
+            --image "${{ needs.build_push.outputs.image }}" \
             --region "${GCP_REGION}" \
             --project "${GCP_PROJECT_ID}" \
             --service-account "${CLOUD_RUN_RUNTIME_SA}" \
