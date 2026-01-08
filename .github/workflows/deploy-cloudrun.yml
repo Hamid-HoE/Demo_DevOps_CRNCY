@@ -13,15 +13,15 @@ concurrency:
 permissions:
   contents: read
   id-token: write
+  pull-requests: read
+  checks: write
+  statuses: write
 
 env:
   GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
   GCP_REGION: ${{ secrets.GCP_REGION }}
   GAR_REPO: ${{ secrets.GAR_REPO }}
 
-  CLOUD_RUN_SERVICE_DEV: ${{ secrets.CLOUD_RUN_SERVICE_DEV }}
-  CLOUD_RUN_SERVICE_TEST: ${{ secrets.CLOUD_RUN_SERVICE_TEST }}
-  CLOUD_RUN_SERVICE_PROD: ${{ secrets.CLOUD_RUN_SERVICE_PROD }}
   CLOUD_RUN_RUNTIME_SA: ${{ secrets.CLOUD_RUN_RUNTIME_SA }}
 
   WIF_PROVIDER: ${{ secrets.WIF_PROVIDER }}
@@ -60,9 +60,8 @@ jobs:
         run: |
           pytest -q --cov=app --cov-report=xml:coverage.xml --cov-report=term-missing
 
-      # IMPORTANTE:
-      # - En PR: Sonar decora PR y te da visibilidad.
-      # - En push: NO BLOQUEAMOS el pipeline por Quality Gate todavía (para que DEV/TEST/PROD sigan avanzando).
+      # En PR: bloquea si falla.
+      # En push: no bloquea el pipeline (para permitir deploy), pero deja el resultado visible.
       - name: SonarCloud Scan (non-blocking on push)
         uses: SonarSource/sonarcloud-github-action@v3
         continue-on-error: ${{ github.event_name == 'push' }}
@@ -115,7 +114,6 @@ jobs:
           docker build -t "${IMAGE_URI}:${TAG}" .
           docker push "${IMAGE_URI}:${TAG}"
 
-          # Obtener digest (misma imagen por digest para DEV/TEST/PROD)
           FULL_DIGEST="$(docker inspect --format='{{index .RepoDigests 0}}' "${IMAGE_URI}:${TAG}")"
           echo "image_ref=${FULL_DIGEST}" >> "$GITHUB_OUTPUT"
           echo "Pushed: ${FULL_DIGEST}"
@@ -124,9 +122,16 @@ jobs:
     name: Deploy DEV (develop)
     runs-on: ubuntu-latest
     needs: [build_push]
-    if: ${{ github.ref_name == 'develop' }}
+    if: ${{ github.event_name == 'push' && github.ref_name == 'develop' }}
+    environment: DEV
+    env:
+      CLOUD_RUN_SERVICE: ${{ secrets.CLOUD_RUN_SERVICE_DEV }}
 
     steps:
+      - name: Guard (service set?)
+        run: |
+          test -n "$CLOUD_RUN_SERVICE" || (echo "CLOUD_RUN_SERVICE is empty (check environment secrets + environment: DEV)" && exit 1)
+
       - name: Auth to Google Cloud (WIF)
         uses: google-github-actions/auth@v2
         with:
@@ -138,7 +143,7 @@ jobs:
 
       - name: Deploy
         run: |
-          gcloud run deploy "${CLOUD_RUN_SERVICE_DEV}" \
+          gcloud run deploy "${CLOUD_RUN_SERVICE}" \
             --image "${{ needs.build_push.outputs.image_ref }}" \
             --region "${GCP_REGION}" \
             --project "${GCP_PROJECT_ID}" \
@@ -149,9 +154,16 @@ jobs:
     name: Deploy TEST (staging)
     runs-on: ubuntu-latest
     needs: [build_push]
-    if: ${{ github.ref_name == 'staging' }}
+    if: ${{ github.event_name == 'push' && github.ref_name == 'staging' }}
+    environment: TEST
+    env:
+      CLOUD_RUN_SERVICE: ${{ secrets.CLOUD_RUN_SERVICE_TEST }}
 
     steps:
+      - name: Guard (service set?)
+        run: |
+          test -n "$CLOUD_RUN_SERVICE" || (echo "CLOUD_RUN_SERVICE is empty (check environment secrets + environment: TEST)" && exit 1)
+
       - name: Auth to Google Cloud (WIF)
         uses: google-github-actions/auth@v2
         with:
@@ -163,7 +175,7 @@ jobs:
 
       - name: Deploy
         run: |
-          gcloud run deploy "${CLOUD_RUN_SERVICE_TEST}" \
+          gcloud run deploy "${CLOUD_RUN_SERVICE}" \
             --image "${{ needs.build_push.outputs.image_ref }}" \
             --region "${GCP_REGION}" \
             --project "${GCP_PROJECT_ID}" \
@@ -174,9 +186,16 @@ jobs:
     name: Deploy PROD (main)
     runs-on: ubuntu-latest
     needs: [build_push]
-    if: ${{ github.ref_name == 'main' }}
+    if: ${{ github.event_name == 'push' && github.ref_name == 'main' }}
+    environment: PROD
+    env:
+      CLOUD_RUN_SERVICE: ${{ secrets.CLOUD_RUN_SERVICE_PROD }}
 
     steps:
+      - name: Guard (service set?)
+        run: |
+          test -n "$CLOUD_RUN_SERVICE" || (echo "CLOUD_RUN_SERVICE is empty (check environment secrets + environment: PROD)" && exit 1)
+
       - name: Auth to Google Cloud (WIF)
         uses: google-github-actions/auth@v2
         with:
@@ -188,7 +207,7 @@ jobs:
 
       - name: Deploy
         run: |
-          gcloud run deploy "${CLOUD_RUN_SERVICE_PROD}" \
+          gcloud run deploy "${CLOUD_RUN_SERVICE}" \
             --image "${{ needs.build_push.outputs.image_ref }}" \
             --region "${GCP_REGION}" \
             --project "${GCP_PROJECT_ID}" \
