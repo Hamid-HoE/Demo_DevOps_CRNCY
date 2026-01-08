@@ -6,51 +6,138 @@
     <title>{{ title }}</title>
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
-  <body>
-    <main class="container">
-      <header class="header">
-        <h1>{{ title }}</h1>
-        <p class="subtitle">Base currency: <strong>{{ base }}</strong>{% if date %} • Rates date: <strong>{{ date }}</strong>{% endif %}</p>
-      </header>
 
+  <body>
+    <header class="topbar">
+      <div class="topbar__left">
+        <div class="title">{{ title }}</div>
+        <div class="subtitle">Base: <b>{{ base }}</b> · FX date: <b>{{ date or "—" }}</b></div>
+      </div>
+
+      <div class="topbar__right">
+        <a class="link" href="/api/rates" target="_blank" rel="noreferrer">API /rates</a>
+      </div>
+    </header>
+
+    <main class="container">
       {% if error %}
-        <div class="error">
-          <strong>Rates fetch error:</strong> {{ error }}
-        </div>
+      <div class="alert">
+        <b>Error:</b> {{ error }}
+      </div>
       {% endif %}
 
-      <section class="card">
-        <table>
-          <thead>
-            <tr>
-              <th>Country</th>
-              <th>Currency</th>
-              <th>1 {{ base }} =</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for r in rows %}
-              <tr>
-                <td class="country">{{ r.flag }} {{ r.country }}</td>
-                <td><code>{{ r.currency }}</code></td>
-                <td>
-                  {% if r.rate is not none %}
-                    <strong>{{ "%.4f"|format(r.rate) }}</strong>
-                  {% else %}
-                    <span class="muted">N/A</span>
-                  {% endif %}
-                </td>
-              </tr>
-            {% endfor %}
-          </tbody>
-        </table>
+      <section class="grid">
+        <!-- Converter -->
+        <article class="card">
+          <div class="card__title">FX Converter</div>
+          <div class="card__subtitle">
+            Cross-rate usando base {{ base }} (solo monedas soportadas por Frankfurter/ECB).
+          </div>
+
+          <div class="form">
+            <label class="label">Amount</label>
+            <input id="amount" class="input" type="number" min="0" step="0.01" value="1" />
+
+            <div class="row2">
+              <div>
+                <label class="label">From</label>
+                <select id="from" class="select">
+                  {% for r in dropdown %}
+                    <option value="{{ r.currency }}">{{ r.flag }} {{ r.currency }} · {{ r.country }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+
+              <div>
+                <label class="label">To</label>
+                <select id="to" class="select">
+                  {% for r in dropdown %}
+                    <option value="{{ r.currency }}">{{ r.flag }} {{ r.currency }} · {{ r.country }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+            </div>
+
+            <button id="btnConvert" class="btn" type="button">Convert</button>
+
+            <div class="result" id="resultBox">
+              <div class="result__label">Result</div>
+              <div class="result__value" id="resultValue">—</div>
+              <div class="result__hint" id="resultHint"></div>
+            </div>
+          </div>
+        </article>
+
+        <!-- Rates -->
+        <article class="card card--wide">
+          <div class="card__head">
+            <div>
+              <div class="card__title">Latest Rates vs {{ base }}</div>
+              <div class="card__subtitle">Click “Trend” to see last 30 working days</div>
+            </div>
+          </div>
+
+          <div class="tableWrap">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>Country</th>
+                  <th>Currency</th>
+                  <th class="right">Rate ({{ base }} → X)</th>
+                  <th class="right">Trend</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for r in rows %}
+                <tr class="{{ 'muted' if not r.supported }}">
+                  <td>
+                    <span class="flag">{{ r.flag }}</span>
+                    <span class="country">{{ r.country }}</span>
+                    {% if not r.supported %}
+                      <span class="badge">unsupported</span>
+                    {% endif %}
+                  </td>
+                  <td><b>{{ r.currency }}</b></td>
+                  <td class="right">
+                    {% if r.rate is not none %}
+                      {{ "%.6f"|format(r.rate) }}
+                    {% else %}
+                      —
+                    {% endif %}
+                  </td>
+                  <td class="right">
+                    {% if r.currency != base and r.supported %}
+                      <a href="#" class="trend" data-symbol="{{ r.currency }}">Trend</a>
+                    {% else %}
+                      —
+                    {% endif %}
+                  </td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+
+          <div class="footnote">
+            Fuente: Frankfurter (public). Cache server-side: 600s.
+          </div>
+        </article>
       </section>
 
-      <footer class="footer">
-        <a href="/api/rates" target="_blank" rel="noreferrer">View JSON</a>
-        <span class="muted">•</span>
-        <a href="/health" target="_blank" rel="noreferrer">Health</a>
-      </footer>
+      <!-- Trend modal -->
+      <div id="modal" class="modal hidden" aria-hidden="true">
+        <div class="modal__backdrop" id="modalClose"></div>
+        <div class="modal__panel">
+          <div class="modal__head">
+            <div class="modal__title" id="modalTitle">Trend</div>
+            <button class="iconBtn" id="modalX" type="button">✕</button>
+          </div>
+          <canvas id="trendCanvas" width="900" height="320"></canvas>
+          <div class="modal__meta" id="modalMeta"></div>
+        </div>
+      </div>
     </main>
+
+    <script src="/static/app.js"></script>
   </body>
 </html>
