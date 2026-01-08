@@ -2,8 +2,9 @@ name: CI + Deploy (Cloud Run)
 
 on:
   pull_request:
+    branches: [ "develop", "staging", "main" ]
   push:
-    branches: [ "main" ]
+    branches: [ "develop", "staging", "main" ]
 
 permissions:
   contents: read
