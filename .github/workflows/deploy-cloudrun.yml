@@ -51,10 +51,14 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          pip install -r src/requirements-dev.txt
+          pip install pytest pytest-cov
 
       - name: Run tests with coverage
+        env:
+          PYTHONPATH: src
         run: |
-          pytest -q --maxfail=1 --disable-warnings --cov=src/app --cov-report=xml:coverage.xml
+          pytest -q --cov=app --cov-report=xml:coverage.xml --cov-report=term-missing
 
       # IMPORTANTE:
       # - En PR: Sonar decora PR y te da visibilidad.
