@@ -83,9 +83,6 @@ jobs:
     needs: [ci]
     if: ${{ github.event_name == 'push' }}
 
-    outputs:
-      image: ${{ steps.meta.outputs.image }}
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -104,15 +101,13 @@ jobs:
           gcloud auth configure-docker "${GCP_REGION}-docker.pkg.dev" --quiet
 
       - name: Build & Push
-        id: meta
         run: |
           IMAGE_URI="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GAR_REPO}/crncy-api"
           TAG="${GITHUB_SHA}"
 
+          echo "Building: ${IMAGE_URI}:${TAG}"
           docker build -t "${IMAGE_URI}:${TAG}" .
           docker push "${IMAGE_URI}:${TAG}"
-
-          echo "image=${IMAGE_URI}:${TAG}" >> "$GITHUB_OUTPUT"
           echo "Pushed: ${IMAGE_URI}:${TAG}"
 
   deploy_dev:
@@ -127,12 +122,13 @@ jobs:
     steps:
       - name: Guard (service set?)
         run: |
-          test -n "$CLOUD_RUN_SERVICE" || (echo "CLOUD_RUN_SERVICE is empty (check environment: DEV secret CLOUD_RUN_SERVICE_DEV)" && exit 1)
+          test -n "$CLOUD_RUN_SERVICE" || (echo "CLOUD_RUN_SERVICE is empty (check environment DEV secret CLOUD_RUN_SERVICE_DEV)" && exit 1)
 
-      - name: Guard (image set?)
+      - name: Set IMAGE
         run: |
-          test -n "${{ needs.build_push.outputs.image }}" || (echo "IMAGE is empty (build_push output missing)" && exit 1)
-          echo "IMAGE=${{ needs.build_push.outputs.image }}"
+          IMAGE="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GAR_REPO}/crncy-api:${GITHUB_SHA}"
+          echo "IMAGE=${IMAGE}" >> "$GITHUB_ENV"
+          echo "Using IMAGE=${IMAGE}"
 
       - name: Auth to Google Cloud (WIF)
         uses: google-github-actions/auth@v2
@@ -146,7 +142,7 @@ jobs:
       - name: Deploy
         run: |
           gcloud run deploy "${CLOUD_RUN_SERVICE}" \
-            --image "${{ needs.build_push.outputs.image }}" \
+            --image "${IMAGE}" \
             --region "${GCP_REGION}" \
             --project "${GCP_PROJECT_ID}" \
             --service-account "${CLOUD_RUN_RUNTIME_SA}" \
@@ -164,7 +160,13 @@ jobs:
     steps:
       - name: Guard (service set?)
         run: |
-          test -n "$CLOUD_RUN_SERVICE" || (echo "CLOUD_RUN_SERVICE is empty (check environment: TEST secret CLOUD_RUN_SERVICE_TEST)" && exit 1)
+          test -n "$CLOUD_RUN_SERVICE" || (echo "CLOUD_RUN_SERVICE is empty (check environment TEST secret CLOUD_RUN_SERVICE_TEST)" && exit 1)
+
+      - name: Set IMAGE
+        run: |
+          IMAGE="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GAR_REPO}/crncy-api:${GITHUB_SHA}"
+          echo "IMAGE=${IMAGE}" >> "$GITHUB_ENV"
+          echo "Using IMAGE=${IMAGE}"
 
       - name: Auth to Google Cloud (WIF)
         uses: google-github-actions/auth@v2
@@ -178,7 +180,7 @@ jobs:
       - name: Deploy
         run: |
           gcloud run deploy "${CLOUD_RUN_SERVICE}" \
-            --image "${{ needs.build_push.outputs.image }}" \
+            --image "${IMAGE}" \
             --region "${GCP_REGION}" \
             --project "${GCP_PROJECT_ID}" \
             --service-account "${CLOUD_RUN_RUNTIME_SA}" \
@@ -196,7 +198,13 @@ jobs:
     steps:
       - name: Guard (service set?)
         run: |
-          test -n "$CLOUD_RUN_SERVICE" || (echo "CLOUD_RUN_SERVICE is empty (check environment: PROD secret CLOUD_RUN_SERVICE_PROD)" && exit 1)
+          test -n "$CLOUD_RUN_SERVICE" || (echo "CLOUD_RUN_SERVICE is empty (check environment PROD secret CLOUD_RUN_SERVICE_PROD)" && exit 1)
+
+      - name: Set IMAGE
+        run: |
+          IMAGE="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GAR_REPO}/crncy-api:${GITHUB_SHA}"
+          echo "IMAGE=${IMAGE}" >> "$GITHUB_ENV"
+          echo "Using IMAGE=${IMAGE}"
 
       - name: Auth to Google Cloud (WIF)
         uses: google-github-actions/auth@v2
@@ -210,7 +218,7 @@ jobs:
       - name: Deploy
         run: |
           gcloud run deploy "${CLOUD_RUN_SERVICE}" \
-            --image "${{ needs.build_push.outputs.image }}" \
+            --image "${IMAGE}" \
             --region "${GCP_REGION}" \
             --project "${GCP_PROJECT_ID}" \
             --service-account "${CLOUD_RUN_RUNTIME_SA}" \
