@@ -4,156 +4,139 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>{{ title }}</title>
-
-    <!-- Tailwind CDN (rápido para “hacerlo bonito” sin build) -->
-    <script src="https://cdn.tailwindcss.com"></script>
-
-    <!-- Chart.js para tendencia -->
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
 
-  <body class="min-h-screen bg-slate-950 text-slate-100">
-    <header class="border-b border-slate-800">
-      <div class="mx-auto max-w-6xl px-4 py-6 flex items-center justify-between">
-        <div>
-          <h1 class="text-2xl font-semibold tracking-tight">{{ title }}</h1>
-          <p class="text-slate-400 text-sm">
-            Base: <span class="font-medium text-slate-200">{{ base }}</span>
-            {% if date %} · FX date: <span class="text-slate-200">{{ date }}</span>{% endif %}
-            {% if meta and meta.stale %} · <span class="text-amber-300 font-medium">stale-cache</span>{% endif %}
-          </p>
-        </div>
+  <body>
+    <header class="topbar">
+      <div class="topbar__left">
+        <div class="title">{{ title }}</div>
+        <div class="subtitle">Base: <b>{{ base }}</b> · FX date: <b>{{ date or "—" }}</b></div>
+      </div>
 
-        <div class="text-right">
-          <a href="/api/rates" class="text-sm text-slate-300 hover:text-white underline underline-offset-4">API /rates</a>
-        </div>
+      <div class="topbar__right">
+        <a class="link" href="/api/rates" target="_blank" rel="noreferrer">API /rates</a>
       </div>
     </header>
 
-    <main class="mx-auto max-w-6xl px-4 py-8 space-y-6">
+    <main class="container">
       {% if error %}
-        <div class="rounded-xl border border-rose-500/40 bg-rose-500/10 p-4">
-          <p class="font-medium text-rose-200">Upstream error</p>
-          <p class="text-rose-200/80 text-sm break-words">{{ error }}</p>
-        </div>
+      <div class="alert">
+        <b>Error:</b> {{ error }}
+      </div>
       {% endif %}
 
-      <!-- Converter -->
-      <section class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div class="lg:col-span-1 rounded-2xl border border-slate-800 bg-slate-900/40 p-5">
-          <h2 class="text-lg font-semibold">FX Converter</h2>
-          <p class="text-sm text-slate-400 mt-1">Convierte montos entre monedas (cross-rate con base {{ base }}).</p>
+      <section class="grid">
+        <!-- Converter -->
+        <article class="card">
+          <div class="card__title">FX Converter</div>
+          <div class="card__subtitle">
+            Cross-rate usando base {{ base }} (solo monedas soportadas por Frankfurter/ECB).
+          </div>
 
-          <div class="mt-4 space-y-3">
-            <label class="block text-sm text-slate-300">Amount</label>
-            <input id="amount" type="number" step="0.01" value="100"
-              class="w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-slate-600" />
+          <div class="form">
+            <label class="label">Amount</label>
+            <input id="amount" class="input" type="number" min="0" step="0.01" value="1" />
 
-            <div class="grid grid-cols-2 gap-3">
+            <div class="row2">
               <div>
-                <label class="block text-sm text-slate-300">From</label>
-                <select id="from" class="w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2">
-                  {% for c in currencies %}
-                    <option value="{{ c.currency }}" {% if c.currency == base %}selected{% endif %}>{{ c.flag }} {{ c.currency }}</option>
+                <label class="label">From</label>
+                <select id="from" class="select">
+                  {% for r in dropdown %}
+                    <option value="{{ r.currency }}">{{ r.flag }} {{ r.currency }} · {{ r.country }}</option>
                   {% endfor %}
                 </select>
               </div>
 
               <div>
-                <label class="block text-sm text-slate-300">To</label>
-                <select id="to" class="w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2">
-                  {% for c in currencies %}
-                    <option value="{{ c.currency }}" {% if c.currency != base %}{% if loop.index == 2 %}selected{% endif %}{% endif %}>{{ c.flag }} {{ c.currency }}</option>
+                <label class="label">To</label>
+                <select id="to" class="select">
+                  {% for r in dropdown %}
+                    <option value="{{ r.currency }}">{{ r.flag }} {{ r.currency }} · {{ r.country }}</option>
                   {% endfor %}
                 </select>
               </div>
             </div>
 
-            <button id="btnConvert"
-              class="w-full rounded-xl bg-indigo-500/90 hover:bg-indigo-500 px-4 py-2 font-medium">
-              Convert
-            </button>
+            <button id="btnConvert" class="btn" type="button">Convert</button>
 
-            <div class="rounded-xl border border-slate-800 bg-slate-950 p-3">
-              <div class="text-xs text-slate-400">Result</div>
-              <div id="result" class="text-lg font-semibold mt-1">—</div>
-              <div id="rateInfo" class="text-xs text-slate-400 mt-1">—</div>
+            <div class="result" id="resultBox">
+              <div class="result__label">Result</div>
+              <div class="result__value" id="resultValue">—</div>
+              <div class="result__hint" id="resultHint"></div>
             </div>
           </div>
-        </div>
+        </article>
 
-        <!-- Rates Table -->
-        <div class="lg:col-span-2 rounded-2xl border border-slate-800 bg-slate-900/40 p-5">
-          <div class="flex items-center justify-between">
-            <h2 class="text-lg font-semibold">Latest Rates vs {{ base }}</h2>
-            <p class="text-sm text-slate-400">Click “Trend” to see last 30 days</p>
+        <!-- Rates -->
+        <article class="card card--wide">
+          <div class="card__head">
+            <div>
+              <div class="card__title">Latest Rates vs {{ base }}</div>
+              <div class="card__subtitle">Click “Trend” to see last 30 working days</div>
+            </div>
           </div>
 
-          <div class="mt-4 overflow-x-auto">
-            <table class="w-full text-sm">
+          <div class="tableWrap">
+            <table class="table">
               <thead>
-                <tr class="text-slate-300 border-b border-slate-800">
-                  <th class="py-2 text-left">Country</th>
-                  <th class="py-2 text-left">Currency</th>
-                  <th class="py-2 text-right">Rate ({{ base }} → X)</th>
-                  <th class="py-2 text-right">Trend</th>
+                <tr>
+                  <th>Country</th>
+                  <th>Currency</th>
+                  <th class="right">Rate ({{ base }} → X)</th>
+                  <th class="right">Trend</th>
                 </tr>
               </thead>
               <tbody>
                 {% for r in rows %}
-                  <tr class="border-b border-slate-900 hover:bg-slate-950/40">
-                    <td class="py-3">
-                      <div class="flex items-center gap-2">
-                        <span class="text-lg">{{ r.flag }}</span>
-                        <span class="font-medium">{{ r.country }}</span>
-                      </div>
-                    </td>
-                    <td class="py-3 text-slate-200 font-medium">{{ r.currency }}</td>
-                    <td class="py-3 text-right tabular-nums">
-                      {% if r.rate is not none %}
-                        {{ "%.6f"|format(r.rate) }}
-                      {% else %}
-                        —
-                      {% endif %}
-                    </td>
-                    <td class="py-3 text-right">
-                      {% if r.currency != base %}
-                        <button class="btnTrend text-indigo-300 hover:text-indigo-200 underline underline-offset-4"
-                          data-symbol="{{ r.currency }}">
-                          Trend
-                        </button>
-                      {% else %}
-                        —
-                      {% endif %}
-                    </td>
-                  </tr>
+                <tr class="{{ 'muted' if not r.supported }}">
+                  <td>
+                    <span class="flag">{{ r.flag }}</span>
+                    <span class="country">{{ r.country }}</span>
+                    {% if not r.supported %}
+                      <span class="badge">unsupported</span>
+                    {% endif %}
+                  </td>
+                  <td><b>{{ r.currency }}</b></td>
+                  <td class="right">
+                    {% if r.rate is not none %}
+                      {{ "%.6f"|format(r.rate) }}
+                    {% else %}
+                      —
+                    {% endif %}
+                  </td>
+                  <td class="right">
+                    {% if r.currency != base and r.supported %}
+                      <a href="#" class="trend" data-symbol="{{ r.currency }}">Trend</a>
+                    {% else %}
+                      —
+                    {% endif %}
+                  </td>
+                </tr>
                 {% endfor %}
               </tbody>
             </table>
           </div>
 
-          <p class="text-xs text-slate-500 mt-3">
-            Fuente: Frankfurter (public). Cache server-side: {{ meta.cache_ttl_seconds or 600 }}s.
-          </p>
-        </div>
+          <div class="footnote">
+            Fuente: Frankfurter (public). Cache server-side: 600s.
+          </div>
+        </article>
       </section>
-    </main>
 
-    <!-- Modal Trend -->
-    <div id="modal" class="fixed inset-0 hidden items-center justify-center bg-black/60 p-4">
-      <div class="w-full max-w-3xl rounded-2xl border border-slate-800 bg-slate-950 p-5">
-        <div class="flex items-center justify-between">
-          <h3 id="modalTitle" class="text-lg font-semibold">Trend</h3>
-          <button id="btnClose" class="rounded-lg border border-slate-800 px-3 py-1 text-sm hover:bg-slate-900">Close</button>
+      <!-- Trend modal -->
+      <div id="modal" class="modal hidden" aria-hidden="true">
+        <div class="modal__backdrop" id="modalClose"></div>
+        <div class="modal__panel">
+          <div class="modal__head">
+            <div class="modal__title" id="modalTitle">Trend</div>
+            <button class="iconBtn" id="modalX" type="button">✕</button>
+          </div>
+          <canvas id="trendCanvas" width="900" height="320"></canvas>
+          <div class="modal__meta" id="modalMeta"></div>
         </div>
-        <div class="mt-4">
-          <canvas id="chart" height="110"></canvas>
-        </div>
-        <p id="modalMeta" class="text-xs text-slate-500 mt-3">—</p>
       </div>
-    </div>
+    </main>
 
     <script src="/static/app.js"></script>
   </body>
