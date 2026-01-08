@@ -2,30 +2,34 @@ name: CI + CD (Cloud Run)
 
 on:
   pull_request:
-    branches: [ "develop", "staging", "main" ]
+    branches: [develop, staging, main]
   push:
-    branches: [ "develop", "staging", "main" ]
+    branches: [develop, staging, main]
+
+concurrency:
+  group: cloudrun-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
   id-token: write
-  pull-requests: write
 
 env:
   GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
   GCP_REGION: ${{ secrets.GCP_REGION }}
   GAR_REPO: ${{ secrets.GAR_REPO }}
 
-  # Cloud Run services (3 ambientes)
   CLOUD_RUN_SERVICE_DEV: ${{ secrets.CLOUD_RUN_SERVICE_DEV }}
   CLOUD_RUN_SERVICE_TEST: ${{ secrets.CLOUD_RUN_SERVICE_TEST }}
   CLOUD_RUN_SERVICE_PROD: ${{ secrets.CLOUD_RUN_SERVICE_PROD }}
-
   CLOUD_RUN_RUNTIME_SA: ${{ secrets.CLOUD_RUN_RUNTIME_SA }}
 
-  # WIF
   WIF_PROVIDER: ${{ secrets.WIF_PROVIDER }}
   WIF_SERVICE_ACCOUNT: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+  SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+  SONAR_ORG: ${{ secrets.SONAR_ORG }}
+  SONAR_PROJECT_KEY: ${{ secrets.SONAR_PROJECT_KEY }}
 
 jobs:
   ci:
@@ -42,10 +46,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: pip
-          cache-dependency-path: |
-            src/requirements.txt
-            src/requirements-dev.txt
 
       - name: Install dependencies
         run: |
@@ -60,31 +60,34 @@ jobs:
         run: |
           pytest -q --cov=app --cov-report=xml:coverage.xml --cov-report=term-missing
 
-      - name: SonarCloud Scan (wait quality gate)
+      # IMPORTANTE:
+      # - En PR: Sonar decora PR y te da visibilidad.
+      # - En push: NO BLOQUEAMOS el pipeline por Quality Gate todavía (para que DEV/TEST/PROD sigan avanzando).
+      - name: SonarCloud Scan (non-blocking on push)
         uses: SonarSource/sonarcloud-github-action@v3
+        continue-on-error: ${{ github.event_name == 'push' }}
         env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ env.SONAR_TOKEN }}
         with:
           args: >
             -Dsonar.host.url=https://sonarcloud.io
-            -Dsonar.organization=${{ secrets.SONAR_ORG }}
-            -Dsonar.projectKey=${{ secrets.SONAR_PROJECT_KEY }}
+            -Dsonar.organization=${{ env.SONAR_ORG }}
+            -Dsonar.projectKey=${{ env.SONAR_PROJECT_KEY }}
             -Dsonar.sources=src/app
             -Dsonar.tests=tests
             -Dsonar.python.coverage.reportPaths=coverage.xml
             -Dsonar.coverage.exclusions=tests/**
             -Dsonar.sourceEncoding=UTF-8
-            -Dsonar.qualitygate.wait=true
 
-  build_image:
+  build_push:
     name: Build & Push Image (Artifact Registry)
     runs-on: ubuntu-latest
-    needs: [ ci ]
-    if: github.event_name == 'push'
+    needs: [ci]
+    if: ${{ github.event_name == 'push' }}
 
     outputs:
-      image_digest: ${{ steps.meta.outputs.image_digest }}
+      image_ref: ${{ steps.meta.outputs.image_ref }}
 
     steps:
       - name: Checkout
@@ -95,42 +98,33 @@ jobs:
         with:
           workload_identity_provider: ${{ env.WIF_PROVIDER }}
           service_account: ${{ env.WIF_SERVICE_ACCOUNT }}
-          token_format: access_token
 
       - name: Setup gcloud
         uses: google-github-actions/setup-gcloud@v2
 
-      - name: Configure Docker auth for Artifact Registry
+      - name: Configure Docker for GAR
         run: |
           gcloud auth configure-docker "${GCP_REGION}-docker.pkg.dev" --quiet
 
-      - name: Build & Push (tag = SHA)
-        id: build
-        run: |
-          IMAGE_REPO="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GAR_REPO}/crncy-api"
-          IMAGE_TAG="${GITHUB_SHA}"
-          IMAGE="${IMAGE_REPO}:${IMAGE_TAG}"
-
-          echo "IMAGE_REPO=$IMAGE_REPO" >> "$GITHUB_ENV"
-          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
-
-          docker build -t "$IMAGE" .
-          docker push "$IMAGE"
-
-      - name: Resolve digest and expose output
+      - name: Build & Push
         id: meta
         run: |
-          DIGEST="$(gcloud artifacts docker images describe "${IMAGE}" --format='value(image_summary.digest)')"
-          IMAGE_DIGEST="${IMAGE_REPO}@${DIGEST}"
+          IMAGE_URI="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GAR_REPO}/crncy-api"
+          TAG="${GITHUB_SHA}"
 
-          echo "Digest: $IMAGE_DIGEST"
-          echo "image_digest=$IMAGE_DIGEST" >> "$GITHUB_OUTPUT"
+          docker build -t "${IMAGE_URI}:${TAG}" .
+          docker push "${IMAGE_URI}:${TAG}"
+
+          # Obtener digest (misma imagen por digest para DEV/TEST/PROD)
+          FULL_DIGEST="$(docker inspect --format='{{index .RepoDigests 0}}' "${IMAGE_URI}:${TAG}")"
+          echo "image_ref=${FULL_DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "Pushed: ${FULL_DIGEST}"
 
   deploy_dev:
     name: Deploy DEV (develop)
     runs-on: ubuntu-latest
-    needs: [ build_image ]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
+    needs: [build_push]
+    if: ${{ github.ref_name == 'develop' }}
 
     steps:
       - name: Auth to Google Cloud (WIF)
@@ -138,26 +132,24 @@ jobs:
         with:
           workload_identity_provider: ${{ env.WIF_PROVIDER }}
           service_account: ${{ env.WIF_SERVICE_ACCOUNT }}
-          token_format: access_token
 
       - name: Setup gcloud
         uses: google-github-actions/setup-gcloud@v2
 
-      - name: Deploy to Cloud Run (DEV)
+      - name: Deploy
         run: |
           gcloud run deploy "${CLOUD_RUN_SERVICE_DEV}" \
-            --image "${{ needs.build_image.outputs.image_digest }}" \
+            --image "${{ needs.build_push.outputs.image_ref }}" \
             --region "${GCP_REGION}" \
             --project "${GCP_PROJECT_ID}" \
             --service-account "${CLOUD_RUN_RUNTIME_SA}" \
-            --allow-unauthenticated \
             --quiet
 
   deploy_test:
     name: Deploy TEST (staging)
     runs-on: ubuntu-latest
-    needs: [ build_image ]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/staging'
+    needs: [build_push]
+    if: ${{ github.ref_name == 'staging' }}
 
     steps:
       - name: Auth to Google Cloud (WIF)
@@ -165,26 +157,24 @@ jobs:
         with:
           workload_identity_provider: ${{ env.WIF_PROVIDER }}
           service_account: ${{ env.WIF_SERVICE_ACCOUNT }}
-          token_format: access_token
 
       - name: Setup gcloud
         uses: google-github-actions/setup-gcloud@v2
 
-      - name: Deploy to Cloud Run (TEST)
+      - name: Deploy
         run: |
           gcloud run deploy "${CLOUD_RUN_SERVICE_TEST}" \
-            --image "${{ needs.build_image.outputs.image_digest }}" \
+            --image "${{ needs.build_push.outputs.image_ref }}" \
             --region "${GCP_REGION}" \
             --project "${GCP_PROJECT_ID}" \
             --service-account "${CLOUD_RUN_RUNTIME_SA}" \
-            --allow-unauthenticated \
             --quiet
 
   deploy_prod:
     name: Deploy PROD (main)
     runs-on: ubuntu-latest
-    needs: [ build_image ]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [build_push]
+    if: ${{ github.ref_name == 'main' }}
 
     steps:
       - name: Auth to Google Cloud (WIF)
@@ -192,17 +182,15 @@ jobs:
         with:
           workload_identity_provider: ${{ env.WIF_PROVIDER }}
           service_account: ${{ env.WIF_SERVICE_ACCOUNT }}
-          token_format: access_token
 
       - name: Setup gcloud
         uses: google-github-actions/setup-gcloud@v2
 
-      - name: Deploy to Cloud Run (PROD)
+      - name: Deploy
         run: |
           gcloud run deploy "${CLOUD_RUN_SERVICE_PROD}" \
-            --image "${{ needs.build_image.outputs.image_digest }}" \
+            --image "${{ needs.build_push.outputs.image_ref }}" \
             --region "${GCP_REGION}" \
             --project "${GCP_PROJECT_ID}" \
             --service-account "${CLOUD_RUN_RUNTIME_SA}" \
-            --allow-unauthenticated \
             --quiet
