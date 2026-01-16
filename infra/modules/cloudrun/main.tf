@@ -40,7 +40,13 @@ resource "google_cloud_run_v2_service" "svc" {
     ignore_changes = [
       # evita drift por cambios automáticos de Google en algunos metadatos
       client,
-      client_version
+      client_version,
+
+      # CLAVE: no permitir que Terraform "regrese" la imagen cuando hagas rollback con Cloud Run
+      template[0].containers[0].image,
+
+      # RECOMENDADO: no permitir que Terraform te re-escriba el enrutamiento de tráfico
+      traffic
     ]
   }
 }
