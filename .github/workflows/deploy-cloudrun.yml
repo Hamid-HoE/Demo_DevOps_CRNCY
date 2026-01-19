@@ -5,7 +5,6 @@ on:
     branches: [develop, staging, main]
   push:
     branches: [develop, staging, main]
-  # PROD manual: despliegas un digest específico (rollback fácil)
   workflow_dispatch:
     inputs:
       environment:
@@ -46,7 +45,6 @@ jobs:
   ci:
     name: CI (tests + SonarCloud)
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -108,8 +106,8 @@ jobs:
 
     outputs:
       image_uri: ${{ steps.build.outputs.image_uri }}
-      readable_tag: ${{ steps.build.outputs.readable_tag }}
       sha_tag: ${{ steps.build.outputs.sha_tag }}
+      readable_tag: ${{ steps.build.outputs.readable_tag }}
       digest: ${{ steps.build.outputs.digest }}
       image_ref: ${{ steps.build.outputs.image_ref }}
 
@@ -130,24 +128,17 @@ jobs:
         run: |
           gcloud auth configure-docker "${GCP_REGION}-docker.pkg.dev" --quiet
 
-      - name: Build, Push (SHA + readable) and Export Digest
+      - name: Build, Push (SHA + readable) and export digest
         id: build
         shell: bash
         run: |
-
-          echo "image_uri=${{ steps.build.outputs.image_uri }}"
-          echo "readable_tag=${{ steps.build.outputs.readable_tag }}"
-          echo "sha_tag=${{ steps.build.outputs.sha_tag }}"
-          echo "digest=${{ steps.build.outputs.digest }}"
-          echo "image_ref=${{ steps.build.outputs.image_ref }}"
-
           set -euo pipefail
 
           IMAGE_URI="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GAR_REPO}/crncy-api"
+          SHA_TAG="${GITHUB_SHA}"
           SHORT_SHA="${GITHUB_SHA::7}"
           TS="$(date -u +%Y%m%d-%H%M)"
 
-          # Prefix legible por rama/ambiente
           if [ "${GITHUB_REF_NAME}" = "develop" ]; then
             PREFIX="dev"
           elif [ "${GITHUB_REF_NAME}" = "staging" ]; then
@@ -160,37 +151,49 @@ jobs:
 
           READABLE_TAG="${PREFIX}-${TS}-${SHORT_SHA}"
 
-          echo "Building: ${IMAGE_URI}:${GITHUB_SHA} and ${IMAGE_URI}:${READABLE_TAG}"
+          echo "Building: ${IMAGE_URI}:${SHA_TAG} and ${IMAGE_URI}:${READABLE_TAG}"
 
-          docker build -t "${IMAGE_URI}:${GITHUB_SHA}" -t "${IMAGE_URI}:${READABLE_TAG}" .
+          docker build -t "${IMAGE_URI}:${SHA_TAG}" -t "${IMAGE_URI}:${READABLE_TAG}" .
+          docker push "${IMAGE_URI}:${SHA_TAG}"
+          docker push "${IMAGE_URI}:${READABLE_TAG}"
 
-          # Push SHA y capturar digest desde el output del push (robusto)
-          PUSH_OUT="$(docker push "${IMAGE_URI}:${GITHUB_SHA}")"
-          echo "${PUSH_OUT}"
-
-          DIGEST="$(echo "${PUSH_OUT}" | sed -n 's/.*digest: \(sha256:[0-9a-f]\+\).*/\1/p' | head -n 1)"
+          # Tomar digest inmutable desde el push (más confiable en CI)
+          # "docker push" imprime: "<tag>: digest: sha256:... size: ..."
+          DIGEST="$(docker push "${IMAGE_URI}:${SHA_TAG}" 2>/dev/null | sed -n 's/.*digest: \(sha256:[0-9a-f]\+\).*/\1/p' | tail -n 1 || true)"
           if [ -z "${DIGEST}" ]; then
-            echo "ERROR: Could not parse digest from docker push output."
-            exit 1
+            # fallback: docker inspect
+            DIGEST="$(docker inspect --format='{{index .RepoDigests 0}}' "${IMAGE_URI}:${SHA_TAG}" | sed -n 's/.*@\(sha256:[0-9a-f]\+\).*/\1/p' | head -n 1 || true)"
           fi
 
-          # Push tag legible
-          docker push "${IMAGE_URI}:${READABLE_TAG}"
+          if [ -z "${DIGEST}" ]; then
+            echo "ERROR: could not resolve digest for ${IMAGE_URI}:${SHA_TAG}"
+            exit 1
+          fi
 
           IMAGE_REF="${IMAGE_URI}@${DIGEST}"
 
           echo "Pushed:"
-          echo " - ${IMAGE_URI}:${GITHUB_SHA}"
+          echo " - ${IMAGE_URI}:${SHA_TAG}"
           echo " - ${IMAGE_URI}:${READABLE_TAG}"
           echo "Immutable:"
           echo " - ${IMAGE_REF}"
 
-          # Step outputs
-          echo "image_uri=${IMAGE_URI}" >> "$GITHUB_OUTPUT"
-          echo "readable_tag=${READABLE_TAG}" >> "$GITHUB_OUTPUT"
-          echo "sha_tag=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
-          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
-          echo "image_ref=${IMAGE_REF}" >> "$GITHUB_OUTPUT"
+          # Export step outputs
+          {
+            echo "image_uri=${IMAGE_URI}"
+            echo "sha_tag=${SHA_TAG}"
+            echo "readable_tag=${READABLE_TAG}"
+            echo "digest=${DIGEST}"
+            echo "image_ref=${IMAGE_REF}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Debug step outputs (build_push)
+        run: |
+          echo "image_uri=${{ steps.build.outputs.image_uri }}"
+          echo "sha_tag=${{ steps.build.outputs.sha_tag }}"
+          echo "readable_tag=${{ steps.build.outputs.readable_tag }}"
+          echo "digest=${{ steps.build.outputs.digest }}"
+          echo "image_ref=${{ steps.build.outputs.image_ref }}"
 
   deploy_dev:
     name: Deploy DEV (develop)
@@ -204,12 +207,13 @@ jobs:
       IMAGE: ${{ needs.build_push.outputs.image_ref }}
 
     steps:
-      - name: Guard (service/image set)
+      - name: Debug needs outputs (deploy_dev)
         run: |
-        
           echo '${{ toJson(needs.build_push.outputs) }}'
           echo "IMAGE env = '${IMAGE}'"
 
+      - name: Guard (service/image set)
+        run: |
           test -n "${CLOUD_RUN_SERVICE}" || (echo "CLOUD_RUN_SERVICE_DEV is empty" && exit 1)
           test -n "${IMAGE}" || (echo "IMAGE digest is empty (build_push output missing)" && exit 1)
           echo "${IMAGE}" | grep -q "@sha256:" || (echo "IMAGE must be digest ref (...@sha256:...)" && exit 1)
@@ -297,7 +301,7 @@ jobs:
         run: |
           gcloud run deploy "${CLOUD_RUN_SERVICE}" \
             --image "${IMAGE}" \
-            --region "${GCP inherits,  -q" \
+            --region "${GCP_REGION}" \
             --project "${GCP_PROJECT_ID}" \
             --service-account "${CLOUD_RUN_RUNTIME_SA}" \
             --quiet
