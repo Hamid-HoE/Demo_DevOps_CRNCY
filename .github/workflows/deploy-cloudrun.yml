@@ -5,6 +5,7 @@ on:
     branches: [develop, staging, main]
   push:
     branches: [develop, staging, main]
+  # PROD manual: despliegas un digest específico (rollback fácil)
   workflow_dispatch:
     inputs:
       environment:
@@ -45,6 +46,7 @@ jobs:
   ci:
     name: CI (tests + SonarCloud)
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -105,11 +107,11 @@ jobs:
     if: ${{ github.event_name == 'push' }}
 
     outputs:
-      image_uri: ${{ steps.build.outputs.image_uri }}
-      sha_tag: ${{ steps.build.outputs.sha_tag }}
+      image_digest_ref: ${{ steps.build.outputs.image_digest_ref }}
+      image_tags: ${{ steps.build.outputs.image_tags }}
       readable_tag: ${{ steps.build.outputs.readable_tag }}
+      sha_tag: ${{ steps.build.outputs.sha_tag }}
       digest: ${{ steps.build.outputs.digest }}
-      image_ref: ${{ steps.build.outputs.image_ref }}
 
     steps:
       - name: Checkout
@@ -128,14 +130,11 @@ jobs:
         run: |
           gcloud auth configure-docker "${GCP_REGION}-docker.pkg.dev" --quiet
 
-      - name: Build, Push (SHA + readable) and export digest
-        id: build
-        shell: bash
+      - name: Compute readable tag
+        id: meta
         run: |
           set -euo pipefail
 
-          IMAGE_URI="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GAR_REPO}/crncy-api"
-          SHA_TAG="${GITHUB_SHA}"
           SHORT_SHA="${GITHUB_SHA::7}"
           TS="$(date -u +%Y%m%d-%H%M)"
 
@@ -149,51 +148,47 @@ jobs:
             PREFIX="ci"
           fi
 
-          READABLE_TAG="${PREFIX}-${TS}-${SHORT_SHA}"
+          TAG_LEGIBLE="${PREFIX}-${TS}-${SHORT_SHA}"
+
+          echo "tag_legible=${TAG_LEGIBLE}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Build, Push (SHA + readable) and export digest
+        id: build
+        run: |
+          set -euo pipefail
+
+          IMAGE_URI="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GAR_REPO}/crncy-api"
+          SHA_TAG="${GITHUB_SHA}"
+          READABLE_TAG="${{ steps.meta.outputs.tag_legible }}"
 
           echo "Building: ${IMAGE_URI}:${SHA_TAG} and ${IMAGE_URI}:${READABLE_TAG}"
 
           docker build -t "${IMAGE_URI}:${SHA_TAG}" -t "${IMAGE_URI}:${READABLE_TAG}" .
-          docker push "${IMAGE_URI}:${SHA_TAG}"
+
+          # Push SHA tag and capture output to parse digest
+          PUSH_OUT="$(docker push "${IMAGE_URI}:${SHA_TAG}")"
+          echo "${PUSH_OUT}"
+
+          # Push readable tag (same manifest/digest)
           docker push "${IMAGE_URI}:${READABLE_TAG}"
 
-          # Tomar digest inmutable desde el push (más confiable en CI)
-          # "docker push" imprime: "<tag>: digest: sha256:... size: ..."
-          DIGEST="$(docker push "${IMAGE_URI}:${SHA_TAG}" 2>/dev/null | sed -n 's/.*digest: \(sha256:[0-9a-f]\+\).*/\1/p' | tail -n 1 || true)"
+          DIGEST="$(echo "${PUSH_OUT}" | awk '/digest: sha256:/ {print $3; exit}')"
           if [ -z "${DIGEST}" ]; then
-            # fallback: docker inspect
-            DIGEST="$(docker inspect --format='{{index .RepoDigests 0}}' "${IMAGE_URI}:${SHA_TAG}" | sed -n 's/.*@\(sha256:[0-9a-f]\+\).*/\1/p' | head -n 1 || true)"
-          fi
-
-          if [ -z "${DIGEST}" ]; then
-            echo "ERROR: could not resolve digest for ${IMAGE_URI}:${SHA_TAG}"
+            echo "ERROR: Could not parse digest from docker push output"
             exit 1
           fi
 
-          IMAGE_REF="${IMAGE_URI}@${DIGEST}"
+          DIGEST_REF="${IMAGE_URI}@${DIGEST}"
 
-          echo "Pushed:"
-          echo " - ${IMAGE_URI}:${SHA_TAG}"
-          echo " - ${IMAGE_URI}:${READABLE_TAG}"
-          echo "Immutable:"
-          echo " - ${IMAGE_REF}"
+          echo "Immutable digest ref: ${DIGEST_REF}"
 
-          # Export step outputs
-          {
-            echo "image_uri=${IMAGE_URI}"
-            echo "sha_tag=${SHA_TAG}"
-            echo "readable_tag=${READABLE_TAG}"
-            echo "digest=${DIGEST}"
-            echo "image_ref=${IMAGE_REF}"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Debug step outputs (build_push)
-        run: |
-          echo "image_uri=${{ steps.build.outputs.image_uri }}"
-          echo "sha_tag=${{ steps.build.outputs.sha_tag }}"
-          echo "readable_tag=${{ steps.build.outputs.readable_tag }}"
-          echo "digest=${{ steps.build.outputs.digest }}"
-          echo "image_ref=${{ steps.build.outputs.image_ref }}"
+          # Export step outputs (consumed as job outputs)
+          echo "image_digest_ref=${DIGEST_REF}" >> "$GITHUB_OUTPUT"
+          echo "image_tags=${READABLE_TAG},${SHA_TAG}" >> "$GITHUB_OUTPUT"
+          echo "readable_tag=${READABLE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "sha_tag=${SHA_TAG}" >> "$GITHUB_OUTPUT"
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
 
   deploy_dev:
     name: Deploy DEV (develop)
@@ -204,16 +199,12 @@ jobs:
 
     env:
       CLOUD_RUN_SERVICE: ${{ secrets.CLOUD_RUN_SERVICE_DEV }}
-      IMAGE: ${{ needs.build_push.outputs.image_ref }}
+      IMAGE: ${{ needs.build_push.outputs.image_digest_ref }}
 
     steps:
-      - name: Debug needs outputs (deploy_dev)
-        run: |
-          echo '${{ toJson(needs.build_push.outputs) }}'
-          echo "IMAGE env = '${IMAGE}'"
-
       - name: Guard (service/image set)
         run: |
+          echo "IMAGE from needs.build_push.outputs.image_digest_ref = '${IMAGE}'"
           test -n "${CLOUD_RUN_SERVICE}" || (echo "CLOUD_RUN_SERVICE_DEV is empty" && exit 1)
           test -n "${IMAGE}" || (echo "IMAGE digest is empty (build_push output missing)" && exit 1)
           echo "${IMAGE}" | grep -q "@sha256:" || (echo "IMAGE must be digest ref (...@sha256:...)" && exit 1)
@@ -245,11 +236,12 @@ jobs:
 
     env:
       CLOUD_RUN_SERVICE: ${{ secrets.CLOUD_RUN_SERVICE_TEST }}
-      IMAGE: ${{ needs.build_push.outputs.image_ref }}
+      IMAGE: ${{ needs.build_push.outputs.image_digest_ref }}
 
     steps:
       - name: Guard (service/image set)
         run: |
+          echo "IMAGE from needs.build_push.outputs.image_digest_ref = '${IMAGE}'"
           test -n "${CLOUD_RUN_SERVICE}" || (echo "CLOUD_RUN_SERVICE_TEST is empty" && exit 1)
           test -n "${IMAGE}" || (echo "IMAGE digest is empty (build_push output missing)" && exit 1)
           echo "${IMAGE}" | grep -q "@sha256:" || (echo "IMAGE must be digest ref (...@sha256:...)" && exit 1)
