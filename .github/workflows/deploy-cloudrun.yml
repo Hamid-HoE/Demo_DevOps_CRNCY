@@ -5,7 +5,6 @@ on:
     branches: [develop, staging, main]
   push:
     branches: [develop, staging, main]
-  # PROD manual: despliegas un digest específico (rollback fácil)
   workflow_dispatch:
     inputs:
       environment:
@@ -16,7 +15,7 @@ on:
         options:
           - prod
       image_digest:
-        description: "Full image reference by digest (e.g. us-central1-docker.pkg.dev/PROJECT/REPO/crncy-api@sha256:...)"
+        description: "Digest only (sha256:...) OR full ref (.../crncy-api@sha256:...)"
         required: true
         type: string
 
@@ -107,11 +106,9 @@ jobs:
     if: ${{ github.event_name == 'push' }}
 
     outputs:
-      image_digest_ref: ${{ steps.build.outputs.image_digest_ref }}
-      image_tags: ${{ steps.build.outputs.image_tags }}
+      digest: ${{ steps.build.outputs.digest }}
       readable_tag: ${{ steps.build.outputs.readable_tag }}
       sha_tag: ${{ steps.build.outputs.sha_tag }}
-      digest: ${{ steps.build.outputs.digest }}
 
     steps:
       - name: Checkout
@@ -130,11 +127,13 @@ jobs:
         run: |
           gcloud auth configure-docker "${GCP_REGION}-docker.pkg.dev" --quiet
 
-      - name: Compute readable tag
-        id: meta
+      - name: Build & Push (SHA + readable) and export DIGEST (safe output)
+        id: build
         run: |
           set -euo pipefail
 
+          IMAGE_URI="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GAR_REPO}/crncy-api"
+          SHA_TAG="${GITHUB_SHA}"
           SHORT_SHA="${GITHUB_SHA::7}"
           TS="$(date -u +%Y%m%d-%H%M)"
 
@@ -148,29 +147,16 @@ jobs:
             PREFIX="ci"
           fi
 
-          TAG_LEGIBLE="${PREFIX}-${TS}-${SHORT_SHA}"
-
-          echo "tag_legible=${TAG_LEGIBLE}" >> "$GITHUB_OUTPUT"
-          echo "short_sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
-
-      - name: Build, Push (SHA + readable) and export digest
-        id: build
-        run: |
-          set -euo pipefail
-
-          IMAGE_URI="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GAR_REPO}/crncy-api"
-          SHA_TAG="${GITHUB_SHA}"
-          READABLE_TAG="${{ steps.meta.outputs.tag_legible }}"
+          READABLE_TAG="${PREFIX}-${TS}-${SHORT_SHA}"
 
           echo "Building: ${IMAGE_URI}:${SHA_TAG} and ${IMAGE_URI}:${READABLE_TAG}"
-
           docker build -t "${IMAGE_URI}:${SHA_TAG}" -t "${IMAGE_URI}:${READABLE_TAG}" .
 
-          # Push SHA tag and capture output to parse digest
+          # Push SHA first and parse digest from push output (robusto)
           PUSH_OUT="$(docker push "${IMAGE_URI}:${SHA_TAG}")"
           echo "${PUSH_OUT}"
 
-          # Push readable tag (same manifest/digest)
+          # Push readable tag (same digest)
           docker push "${IMAGE_URI}:${READABLE_TAG}"
 
           DIGEST="$(echo "${PUSH_OUT}" | awk '/digest: sha256:/ {print $3; exit}')"
@@ -179,16 +165,16 @@ jobs:
             exit 1
           fi
 
-          DIGEST_REF="${IMAGE_URI}@${DIGEST}"
+          echo "Pushed tags:"
+          echo " - ${IMAGE_URI}:${SHA_TAG}"
+          echo " - ${IMAGE_URI}:${READABLE_TAG}"
+          echo "Digest:"
+          echo " - ${DIGEST}"
 
-          echo "Immutable digest ref: ${DIGEST_REF}"
-
-          # Export step outputs (consumed as job outputs)
-          echo "image_digest_ref=${DIGEST_REF}" >> "$GITHUB_OUTPUT"
-          echo "image_tags=${READABLE_TAG},${SHA_TAG}" >> "$GITHUB_OUTPUT"
+          # IMPORTANT: outputs "seguros" (NO incluyen project/repo)
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
           echo "readable_tag=${READABLE_TAG}" >> "$GITHUB_OUTPUT"
           echo "sha_tag=${SHA_TAG}" >> "$GITHUB_OUTPUT"
-          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
 
   deploy_dev:
     name: Deploy DEV (develop)
@@ -199,15 +185,15 @@ jobs:
 
     env:
       CLOUD_RUN_SERVICE: ${{ secrets.CLOUD_RUN_SERVICE_DEV }}
-      IMAGE: ${{ needs.build_push.outputs.image_digest_ref }}
+      DIGEST: ${{ needs.build_push.outputs.digest }}
 
     steps:
-      - name: Guard (service/image set)
+      - name: Guard (service/digest set)
         run: |
-          echo "IMAGE from needs.build_push.outputs.image_digest_ref = '${IMAGE}'"
+          echo "DIGEST from build_push = '${DIGEST}'"
           test -n "${CLOUD_RUN_SERVICE}" || (echo "CLOUD_RUN_SERVICE_DEV is empty" && exit 1)
-          test -n "${IMAGE}" || (echo "IMAGE digest is empty (build_push output missing)" && exit 1)
-          echo "${IMAGE}" | grep -q "@sha256:" || (echo "IMAGE must be digest ref (...@sha256:...)" && exit 1)
+          test -n "${DIGEST}" || (echo "DIGEST is empty (build_push output missing)" && exit 1)
+          echo "${DIGEST}" | grep -q "^sha256:" || (echo "DIGEST must look like sha256:..." && exit 1)
 
       - name: Auth to Google Cloud (WIF)
         uses: google-github-actions/auth@v2
@@ -220,6 +206,12 @@ jobs:
 
       - name: Deploy (immutable digest)
         run: |
+          set -euo pipefail
+          IMAGE_URI="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GAR_REPO}/crncy-api"
+          IMAGE="${IMAGE_URI}@${DIGEST}"
+
+          echo "Deploying: ${IMAGE}"
+
           gcloud run deploy "${CLOUD_RUN_SERVICE}" \
             --image "${IMAGE}" \
             --region "${GCP_REGION}" \
@@ -236,15 +228,15 @@ jobs:
 
     env:
       CLOUD_RUN_SERVICE: ${{ secrets.CLOUD_RUN_SERVICE_TEST }}
-      IMAGE: ${{ needs.build_push.outputs.image_digest_ref }}
+      DIGEST: ${{ needs.build_push.outputs.digest }}
 
     steps:
-      - name: Guard (service/image set)
+      - name: Guard (service/digest set)
         run: |
-          echo "IMAGE from needs.build_push.outputs.image_digest_ref = '${IMAGE}'"
+          echo "DIGEST from build_push = '${DIGEST}'"
           test -n "${CLOUD_RUN_SERVICE}" || (echo "CLOUD_RUN_SERVICE_TEST is empty" && exit 1)
-          test -n "${IMAGE}" || (echo "IMAGE digest is empty (build_push output missing)" && exit 1)
-          echo "${IMAGE}" | grep -q "@sha256:" || (echo "IMAGE must be digest ref (...@sha256:...)" && exit 1)
+          test -n "${DIGEST}" || (echo "DIGEST is empty (build_push output missing)" && exit 1)
+          echo "${DIGEST}" | grep -q "^sha256:" || (echo "DIGEST must look like sha256:..." && exit 1)
 
       - name: Auth to Google Cloud (WIF)
         uses: google-github-actions/auth@v2
@@ -257,6 +249,12 @@ jobs:
 
       - name: Deploy (immutable digest)
         run: |
+          set -euo pipefail
+          IMAGE_URI="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GAR_REPO}/crncy-api"
+          IMAGE="${IMAGE_URI}@${DIGEST}"
+
+          echo "Deploying: ${IMAGE}"
+
           gcloud run deploy "${CLOUD_RUN_SERVICE}" \
             --image "${IMAGE}" \
             --region "${GCP_REGION}" \
@@ -272,13 +270,26 @@ jobs:
 
     env:
       CLOUD_RUN_SERVICE: ${{ secrets.CLOUD_RUN_SERVICE_PROD }}
-      IMAGE: ${{ inputs.image_digest }}
+      INPUT: ${{ inputs.image_digest }}
 
     steps:
-      - name: Guard (service/image set)
+      - name: Normalize digest input
+        run: |
+          set -euo pipefail
+          # Acepta "sha256:..." o "....@sha256:..."
+          if echo "${INPUT}" | grep -q "@sha256:"; then
+            DIGEST="$(echo "${INPUT}" | sed 's/^.*@//')"
+          else
+            DIGEST="${INPUT}"
+          fi
+
+          echo "DIGEST=${DIGEST}" >> "$GITHUB_ENV"
+
+      - name: Guard (service/digest set)
         run: |
           test -n "${CLOUD_RUN_SERVICE}" || (echo "CLOUD_RUN_SERVICE_PROD is empty" && exit 1)
-          echo "${IMAGE}" | grep -q "@sha256:" || (echo "IMAGE must be a digest reference (...@sha256:...)" && exit 1)
+          test -n "${DIGEST}" || (echo "DIGEST is empty" && exit 1)
+          echo "${DIGEST}" | grep -q "^sha256:" || (echo "DIGEST must look like sha256:..." && exit 1)
 
       - name: Auth to Google Cloud (WIF)
         uses: google-github-actions/auth@v2
@@ -291,6 +302,12 @@ jobs:
 
       - name: Deploy PROD (immutable digest)
         run: |
+          set -euo pipefail
+          IMAGE_URI="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GAR_REPO}/crncy-api"
+          IMAGE="${IMAGE_URI}@${DIGEST}"
+
+          echo "Deploying: ${IMAGE}"
+
           gcloud run deploy "${CLOUD_RUN_SERVICE}" \
             --image "${IMAGE}" \
             --region "${GCP_REGION}" \
