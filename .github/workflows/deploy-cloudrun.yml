@@ -134,6 +134,13 @@ jobs:
         id: build
         shell: bash
         run: |
+
+          echo "image_uri=${{ steps.build.outputs.image_uri }}"
+          echo "readable_tag=${{ steps.build.outputs.readable_tag }}"
+          echo "sha_tag=${{ steps.build.outputs.sha_tag }}"
+          echo "digest=${{ steps.build.outputs.digest }}"
+          echo "image_ref=${{ steps.build.outputs.image_ref }}"
+
           set -euo pipefail
 
           IMAGE_URI="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GAR_REPO}/crncy-api"
@@ -199,6 +206,10 @@ jobs:
     steps:
       - name: Guard (service/image set)
         run: |
+        
+          echo '${{ toJson(needs.build_push.outputs) }}'
+          echo "IMAGE env = '${IMAGE}'"
+
           test -n "${CLOUD_RUN_SERVICE}" || (echo "CLOUD_RUN_SERVICE_DEV is empty" && exit 1)
           test -n "${IMAGE}" || (echo "IMAGE digest is empty (build_push output missing)" && exit 1)
           echo "${IMAGE}" | grep -q "@sha256:" || (echo "IMAGE must be digest ref (...@sha256:...)" && exit 1)
