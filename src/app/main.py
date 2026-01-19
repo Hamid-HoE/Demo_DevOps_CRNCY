@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import os
 import time
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -13,6 +14,11 @@ from fastapi.templating import Jinja2Templates
 
 APP_TITLE = "CRNCY - USD FX Dashboard"
 BASE_CCY = "USD"
+
+# Build metadata (inyectado por el pipeline como variables de entorno)
+BUILD_TAG = os.getenv("BUILD_TAG", "unknown")
+GIT_SHA = os.getenv("GIT_SHA", os.getenv("GITHUB_SHA", "unknown"))
+BUILD_TIME_UTC = os.getenv("BUILD_TIME_UTC", "unknown")
 
 # Monedas demo (todas soportadas por Frankfurter/ECB normalmente)
 # Si agregas una no soportada, el sistema la marcará como unsupported automáticamente.
@@ -61,6 +67,22 @@ app.mount(
 @app.get("/health")
 def health() -> Dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/api/version")
+def api_version() -> Dict[str, str]:
+    # Si BUILD_TIME_UTC no fue inyectado, muestra hora actual UTC como fallback informativo
+    build_time = BUILD_TIME_UTC
+    if build_time == "unknown":
+        build_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    return {
+        "app": APP_TITLE,
+        "base": BASE_CCY,
+        "build_tag": BUILD_TAG,
+        "git_sha": GIT_SHA,
+        "build_time_utc": build_time,
+    }
 
 
 async def _get_supported_currencies() -> Dict[str, str]:
@@ -286,6 +308,11 @@ async def home(request: Request) -> HTMLResponse:
     # Dropdowns: sólo las soportadas (para que nunca explote el converter)
     dropdown = [r for r in rows if r["supported"]]
 
+    # Fallback de hora UTC si no viene del pipeline
+    build_time = BUILD_TIME_UTC
+    if build_time == "unknown":
+        build_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
     return templates.TemplateResponse(
         "index.html",
         {
@@ -296,5 +323,8 @@ async def home(request: Request) -> HTMLResponse:
             "rows": rows,
             "dropdown": dropdown,
             "error": error,
+            "build_tag": BUILD_TAG,
+            "git_sha": GIT_SHA,
+            "build_time_utc": build_time,
         },
     )
