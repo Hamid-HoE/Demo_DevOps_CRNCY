@@ -1,13 +1,17 @@
-.venv/
-__pycache__/
+# Python
+**/__pycache__/
 *.pyc
 .pytest_cache/
-.terraform/
-*.tfstate
-*.tfstate.*
-*.tfplan
+.coverage
+coverage/
 coverage.xml
+htmlcov/
+
+# venv
+.venv/
+
 # Terraform
+.terraform/
 **/.terraform/
 **/.terraform.lock.hcl.bak
 *.tfstate
